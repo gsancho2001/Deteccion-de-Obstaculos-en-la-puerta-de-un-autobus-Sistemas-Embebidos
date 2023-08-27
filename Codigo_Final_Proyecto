@@ -1,0 +1,180 @@
+#include <WiFi.h>
+#include <WiFiClient.h>
+//#include <ESPAsyncWebSrv.h>
+#include <esp_camera.h>
+
+// Definir los pines de los sensores, el LED, los botones y los pines del driver L298N
+const int sensorPin1 = 15;       // Pin del sensor infrarrojo 1 (GPIO4)
+const int sensorPin2 = 5;       // Pin del sensor infrarrojo 2 (GPIO5)
+const int ledPin = 2;           // Pin del LED (GPIO2)
+const int openButtonPin = 18;   // Pin del botón de apertura (GPIO18)
+const int closeButtonPin = 19;  // Pin del botón de cierre (GPIO19)
+const int in1Pin = 23;          // Pin IN1 del driver L298N (GPIO26)
+const int in2Pin = 22;          // Pin IN2 del driver L298N (GPIO27)
+const int outputPin = 4;        // Pin de salida para activar la entrada con pull-up (GPIO4)
+
+bool measurementsStarted = false;    // Variable para controlar si se iniciaron las mediciones
+bool obstacleDetected = false;       // Variable para almacenar si se detecta un obstáculo
+bool closingInProgress = false;      // Variable para controlar el cierre en progreso
+bool reverseInProgress = false;      // Variable para controlar el retroceso en progreso
+volatile bool interrupcion= false;
+bool itsclose=true;
+bool itsopen=false;
+//unsigned long startTime = 0;         // Variable para almacenar el tiempo de inicio
+unsigned long closingTime = 0;       // Variable para almacenar el tiempo de cierre
+unsigned long closingDuration = 0;   // Variable para almacenar la duración del cierre
+
+unsigned long startTime = 0;  // Tiempo de inicio del cierre
+unsigned long cerrartime = 0;
+unsigned long elapsedTime = 0;  // Tiempo transcurrido durante el cierre
+unsigned long targetTime = 13000;  // Tiempo objetivo de cierre (13 segundos)
+void IRAM_ATTR isr() {
+    //if(measurementsStarted){
+    digitalWrite(in1Pin, LOW);
+    digitalWrite(in2Pin, LOW);
+    //digitalWrite(ledPin, HIGH);
+    digitalWrite(outputPin, HIGH); 
+    digitalWrite(ledPin, HIGH);
+    
+    obstacleDetected = true; 
+    itsclose=false;  
+    interrupcion= true;
+    measurementsStarted = true;
+}
+
+void activarInterrup(){
+ 
+  attachInterrupt(digitalPinToInterrupt(sensorPin1), isr, HIGH);
+  attachInterrupt(digitalPinToInterrupt(sensorPin2), isr, HIGH);
+}
+void setup() {
+  // Inicializa el puerto serie
+  Serial.begin(115200);
+  startTime = millis();
+  
+  // Configura los pines de los sensores, el LED, los botones y los pines del driver L298N
+  pinMode(sensorPin1, INPUT);
+  pinMode(sensorPin2, INPUT);
+  pinMode(ledPin, OUTPUT);
+  pinMode(openButtonPin, INPUT_PULLUP);
+  pinMode(closeButtonPin, INPUT_PULLUP);
+  pinMode(in1Pin, OUTPUT);
+  pinMode(in2Pin, OUTPUT);
+  pinMode(outputPin, OUTPUT);
+  digitalWrite(outputPin, LOW); // Establecer el pin de salida en alto inicialmente
+}
+
+void openDoor() {
+  desactivarInterrup();
+  // Gira el motor en sentido horario
+  itsclose=false;
+  digitalWrite(in1Pin, HIGH);
+  digitalWrite(in2Pin, LOW);
+  Serial.println("Abriendo Puertas....");
+  
+  delay(targetTime);
+  digitalWrite(in1Pin, LOW);
+  
+  Serial.println("Puertas Abiertas");
+  if (!measurementsStarted) {
+    Serial.println("Pase por las puertas por favor");
+    delay(10000);
+    itsopen=true;
+    Serial.println("Cuidado!! Se cerraran puertas");
+    measurementsStarted = true;
+  }
+}
+void desactivarInterrup(){
+  detachInterrupt(sensorPin1);
+  detachInterrupt(sensorPin2);
+}
+void closeDoor() {
+  activarInterrup(); // Activa las interrupciones durante el proceso de cierre
+  startTime = millis(); // Registra el tiempo de inicio del cierre
+
+  digitalWrite(in1Pin, LOW);
+  digitalWrite(in2Pin, HIGH);
+  itsclose = false;
+  itsopen = false;
+  Serial.println("Cerrando Puertas....");
+  measurementsStarted = true;
+  closingInProgress = true;
+
+  while (closingInProgress) {
+    elapsedTime = millis() - startTime; // Calcula el tiempo transcurrido durante el cierre
+
+    if ((elapsedTime >= targetTime)) {
+      digitalWrite(in1Pin, LOW);
+      digitalWrite(in2Pin, LOW);
+      Serial.println("Puertas Cerradas");
+      targetTime=13000;
+      obstacleDetected = false;
+      measurementsStarted = false;
+      itsclose = true;
+      itsopen = false;
+      closingInProgress = false;
+      reverseInProgress = false;
+      desactivarInterrup(); // Desactiva las interrupciones después del cierre
+    }
+    if (interrupcion) {
+      unsigned long timeElapsedBeforeInterruption = millis() - startTime;
+      targetTime -= timeElapsedBeforeInterruption;
+      //interrupcion = false; // Resetea la bandera de interrupción
+      digitalWrite(in1Pin, LOW);
+      digitalWrite(in2Pin, LOW);
+      Serial.println("Cierre detenido por interrupción");
+      obstacleDetected = false;
+      measurementsStarted = false;
+      itsclose = true;
+      itsopen = false;
+      closingInProgress = false;
+      reverseInProgress = false;
+      //desactivarInterrup(); // Desactiva las interrupciones después del cierre detenido
+      interrupcion = false; // Resetea la bandera de interrupción
+    }
+  }
+}
+
+void reverseDoor(unsigned long closingDuration) {
+  // Retrocede el motor durante la duración especificada
+  digitalWrite(in1Pin, HIGH);
+  digitalWrite(in2Pin, LOW);
+  delay(closingDuration * 1000); // Retraso para retroceder la misma cantidad de tiempo que se avanzó
+  digitalWrite(in1Pin, LOW);
+  reverseInProgress = false;
+}
+
+void loop() {
+  // Verifica si se pulsó el botón de apertura
+  if ((digitalRead(openButtonPin) == LOW)&& itsopen==false && itsclose==true) {
+    measurementsStarted = false;
+    openDoor();
+  }
+
+  // Verifica si los sensores detectan un obstáculo
+  if (measurementsStarted) {
+    int obstacle1 = digitalRead(sensorPin1);
+    int obstacle2 = digitalRead(sensorPin2);
+
+    // Si alguno de los sensores detecta un obstáculo
+    if (obstacle1 == LOW || obstacle2 == LOW) {
+      obstacleDetected = true;
+      digitalWrite(ledPin, HIGH);
+      digitalWrite(outputPin, HIGH);
+    } else {
+      obstacleDetected = false;
+      digitalWrite(ledPin, LOW);
+      digitalWrite(outputPin, LOW);  // Apaga el LED si no se detecta obstáculo
+
+    }
+  }
+
+  // Verifica si se pulsó el botón de cierre y no hay obstáculo
+  if ((digitalRead(closeButtonPin) == LOW && !obstacleDetected && measurementsStarted && !itsclose)||(digitalRead(closeButtonPin) == LOW && interrupcion)) {
+    closingInProgress = true;
+    interrupcion = false;
+    closeDoor();
+    
+  }
+  delay(100);
+}
